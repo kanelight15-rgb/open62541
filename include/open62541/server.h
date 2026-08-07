@@ -969,6 +969,17 @@ UA_Server_addVariableNode(UA_Server *server, const UA_NodeId requestedNewNodeId,
                           const UA_NodeId typeDefinition,
                           const UA_VariableAttributes attr,
                           void *nodeContext, UA_NodeId *outNewNodeId);
+UA_EXPORT UA_StatusCode
+UA_Server_addVariableNode_PTR(
+    UA_Server* server,
+    const UA_NodeId* requestedNewNodeId,
+    const UA_NodeId* parentNodeId,
+    const UA_NodeId* referenceTypeId,
+    const UA_QualifiedName* browseName,
+    const UA_NodeId* typeDefinition,
+    const UA_VariableAttributes* attr,
+    void* nodeContext,
+    UA_NodeId* outNewNodeId);
 
 /* Add a VariableNode with a callback value-source */
 UA_StatusCode UA_EXPORT UA_THREADSAFE
@@ -993,8 +1004,8 @@ UA_Server_addCallbackValueSourceVariableNode(UA_Server *server,
                                                  outNewNodeId)
 
 /* Set an internal value source. Both the value argument and the notifications
- * argument can be NULL. If value is NULL, an existing internal value is kept;
- * switching from another value source creates an empty internal value. If
+ * argument can be NULL. If value is NULL, the Read service is used to get the
+ * latest value before switching from a callback to an internal value source. If
  * notifications is NULL, then all onRead/onWrite notifications are disabled. */
 UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Server_setVariableNode_internalValueSource(UA_Server *server,
@@ -1236,18 +1247,16 @@ UA_Server_addViewNode(UA_Server *server, const UA_NodeId requestedNewNodeId,
  * When a node is destroyed, the node-type destructor is called before the
  * global destructor. So the overall node lifecycle is as follows:
  *
- * 1. Global Early Constructor (set in the server config)
- * 2. Node-Type Early Constructor (for Variables or Objects)
- * 3. Recursive instantiation of the node's children
- * 4. Global Constructor (set in the server config)
- * 5. Node-Type Constructor (for Variables or Objects)
- * 6. (Usage-period of the Node)
- * 7. Node-Type Destructor
- * 8. Global Destructor
+ * 1. Global Constructor (set in the server config)
+ * 2. Node-Type Constructor (for VariableType or ObjectTypes)
+ * 3. (Usage-period of the Node)
+ * 4. Node-Type Destructor
+ * 5. Global Destructor
  *
  * The constructor and destructor callbacks can be set to ``NULL`` and are not
- * used in that case. If a constructor fails, the global destructor will be
- * called before removing the node. The destructors are assumed to never fail.
+ * used in that case. If the node-type constructor fails, the global destructor
+ * will be called before removing the node. The destructors are assumed to never
+ * fail.
  *
  * Every node carries a user-context and a constructor-context pointer. The
  * user-context is used to attach custom data to a node. But the (user-defined)
@@ -1264,7 +1273,7 @@ UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Server_setNodeContext(UA_Server *server, UA_NodeId nodeId, void *nodeContext);
 
 /**
- * Global constructor and destructor callbacks used for every node.
+ * Global constructor and destructor callbacks used for every node type.
  * It gets set in the server config. */
 
 typedef struct {
@@ -1322,17 +1331,6 @@ typedef struct {
                                          const UA_NodeId *targetParentNodeId,
                                          const UA_NodeId *referenceTypeId,
                                          UA_NodeId *targetNodeId);
-
-    /* Can be NULL. Called after the node has been inserted into the Nodestore
-     * and its parent and TypeDefinition references have been added, but before
-     * automatic child instantiation. This allows the callback to add children
-     * that shall take the place of children declared by the TypeDefinition.
-     * May replace the nodeContext. */
-    UA_StatusCode (*earlyConstructor)(UA_Server *server,
-                                      const UA_NodeId *sessionId,
-                                      void *sessionContext,
-                                      const UA_NodeId *nodeId,
-                                      void **nodeContext);
 } UA_GlobalNodeLifecycle;
 
 /**
@@ -1351,16 +1349,6 @@ typedef struct {
                        const UA_NodeId *sessionId, void *sessionContext,
                        const UA_NodeId *typeNodeId, void *typeNodeContext,
                        const UA_NodeId *nodeId, void **nodeContext);
-
-    /* Can be NULL. Called after the global earlyConstructor and before
-     * automatic child instantiation. May replace the nodeContext. */
-    UA_StatusCode (*earlyConstructor)(UA_Server *server,
-                                      const UA_NodeId *sessionId,
-                                      void *sessionContext,
-                                      const UA_NodeId *typeNodeId,
-                                      void *typeNodeContext,
-                                      const UA_NodeId *nodeId,
-                                      void **nodeContext);
 } UA_NodeTypeLifecycle;
 
 UA_StatusCode UA_EXPORT UA_THREADSAFE
@@ -1381,8 +1369,7 @@ UA_Server_setNodeTypeLifecycle(UA_Server *server, UA_NodeId nodeId,
  *  - prepares the node and adds it to the nodestore
  *  - copies some unassigned attributes from the TypeDefinition node internally
  *  - adds the references to the parent (and the TypeDefinition if applicable)
- *  - performs type-checking of variables
- *  - calls the global and node-type earlyConstructors, if configured.
+ *  - performs type-checking of variables.
  *
  * You can add an object node without a parent if you set the parentNodeId and
  * referenceTypeId to UA_NODE_ID_NULL. Then you need to add the parent reference
@@ -2166,13 +2153,6 @@ UA_Role_equal(const UA_Role *r1, const UA_Role *r2);
  *
  * The :ref:`tutorials` provide a good starting point for this. */
 
-/* Encryption mode requirement for OPC UA Binary over WebSockets */
-typedef enum {
-    UA_WEBSOCKET_ENCRYPTION_OPTIONAL = 0, /* Allow both opc.ws:// (unencrypted) and opc.wss:// (TLS) */
-    UA_WEBSOCKET_ENCRYPTION_REQUIRED = 1, /* Allow only opc.wss:// (TLS); reject opc.ws:// */
-    UA_WEBSOCKET_ENCRYPTION_DISABLED = 2  /* Allow only opc.ws:// (unencrypted); reject opc.wss:// */
-} UA_WebSocketEncryptionMode;
-
 struct UA_ServerConfig {
     void *context; /* Used to attach custom data to a server config. This can
                     * then be retrieved e.g. in a callback that forwards a
@@ -2265,10 +2245,10 @@ struct UA_ServerConfig {
 
     /* Networking
      * ~~~~~~~~~~
-     * The `serverUrls` array contains the server URLs like
+     * The `severUrls` array contains the server URLs like
      * `opc.tcp://my-server:4840` or `opc.wss://localhost:443`. The URLs are
      * used both for discovery and to set up the server sockets based on the
-     * defined hostnames, ports and WebSocket paths.
+     * defined hostnames (and ports).
      *
      * - If the list is empty: Listen on all network interfaces with TCP port 4840.
      * - If the hostname of a URL is empty: Use the define protocol and port and
@@ -2277,7 +2257,7 @@ struct UA_ServerConfig {
     size_t serverUrlsSize;
 
     /* The following settings are specific to OPC UA with TCP transport. */
-    UA_Boolean tcpEnabled;    /* Enable the TCP listener (default: true) */
+    UA_Boolean tcpEnabled;
     UA_UInt32 tcpBufSize;    /* Max length of sent and received chunks (packets)
                               * (default: 64kB) */
     UA_UInt32 tcpMaxMsgSize; /* Max length of messages
@@ -2285,25 +2265,6 @@ struct UA_ServerConfig {
     UA_UInt32 tcpMaxChunks;  /* Max number of chunks per message
                               * (default: 0 -> unbounded) */
     UA_Boolean tcpReuseAddr;
-
-
-    /* The following settings are specific to OPC UA Binary over WebSockets.
-     * The transport is opt-in and controlled via webSocketEnabled (default: false).
-     * TLS credentials protect opc.wss:// endpoints independently of OPC UA SecurityPolicies. */
-    UA_Boolean webSocketEnabled; /* Enable the WebSocket listener (default: false) */
-    UA_Boolean webSocketAllowUnencrypted; /* Allow non-standard unencrypted opc.ws:// endpoints (default: false) */
-    UA_WebSocketEncryptionMode webSocketEncryptionMode; /* Encryption requirement (default: UA_WEBSOCKET_ENCRYPTION_OPTIONAL) */
-    UA_UInt32 webSocketBufSize;    /* Max length of sent and received chunks
-                                    * (default: 64kB) */
-    UA_UInt32 webSocketMaxMsgSize; /* Max length of messages
-                                    * (default: 0 -> unbounded) */
-    UA_UInt32 webSocketMaxChunks;  /* Max number of chunks per message
-                                    * (default: 0 -> unbounded) */
-    UA_UInt32 webSocketMaxQueueSize; /* Max bytes queued for a slow WebSocket
-                                      * peer (default: 16 * webSocketBufSize) */
-    UA_ByteString webSocketCertificate; /* TLS certificate, DER or PEM */
-    UA_ByteString webSocketPrivateKey;  /* TLS private key, DER or PEM */
-    UA_String webSocketPrivateKeyPassword;
 
     /* Security and Encryption
      * ~~~~~~~~~~~~~~~~~~~~~~~ */
@@ -2359,11 +2320,6 @@ struct UA_ServerConfig {
      * is allowed that they have any ModellingRule independent of the
      * ModellingRule of their InstanceDeclaration */
     UA_Boolean modellingRulesOnInstances;
-
-    /* Copy Method instance declarations into each Object instance instead of
-     * adding a reference to the Method on the ObjectType. The default is false
-     * for backwards compatibility. */
-    UA_Boolean copyMethodsOnInstances;
 
     /* Limits
      * ~~~~~~ */
@@ -2944,9 +2900,7 @@ UA_Server_getNamespaceDefaultRolePermissions(UA_Server *server,
  * ``examples/server_json_config.c`` document the intended workflow and the
  * currently supported keys. They cover the common runtime limits as well as
  * optional blocks for discovery, subscriptions, historizing, PubSub and
- * security policy configuration. TCP is enabled by default. WebSockets are
- * disabled by default and can be configured with ``webSocketEnabled`` and the
- * ``webSocket`` block when ``UA_ENABLE_LWS`` is compiled in.
+ * security policy configuration.
  *
  * The following functions require JSON encoding support
  * (``UA_ENABLE_JSON_ENCODING``). */

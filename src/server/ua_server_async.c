@@ -601,13 +601,10 @@ Service_Read(UA_Server *server, UA_Session *session, const void *request_, void 
     return (ar->opCountdown == 0);
 }
 
-static UA_StatusCode
-readOptionalNode_async(UA_Server *server, UA_Session *session,
-                       const UA_Node *node,
-                       const UA_ReadValueId *operation,
-                       UA_TimestampsToReturn ttr,
-                       UA_ServerAsyncReadResultCallback callback,
-                       void *context, UA_UInt32 timeout) {
+UA_StatusCode
+read_async(UA_Server *server, UA_Session *session, const UA_ReadValueId *operation,
+           UA_TimestampsToReturn ttr, UA_ServerAsyncReadResultCallback callback,
+           void *context, UA_UInt32 timeout) {
     /* Allocate the async operation. Do this first as we need the pointer to the
      * datavalue to be stable.*/
     UA_AsyncOperation *op = (UA_AsyncOperation*)UA_calloc(1, sizeof(UA_AsyncOperation));
@@ -629,10 +626,7 @@ readOptionalNode_async(UA_Server *server, UA_Session *session,
     }
 
     /* Call the operation */
-    UA_Boolean done = node ?
-        Operation_ReadWithNode(server, session, node, ttr, operation,
-                               &op->output.directRead) :
-        Operation_Read(server, session, ttr, operation, &op->output.directRead);
+    UA_Boolean done = Operation_Read(server, session, ttr, operation, &op->output.directRead);
     if(!done)
         return persistAsyncDirectOperation(server, op, UA_ASYNCOPERATIONTYPE_READ_DIRECT,
                                            context, (uintptr_t)callback, timeoutDate);
@@ -641,28 +635,6 @@ readOptionalNode_async(UA_Server *server, UA_Session *session,
     UA_DataValue_clear(&op->output.directRead);
     UA_free(op);
     return UA_STATUSCODE_GOOD;
-}
-
-UA_StatusCode
-read_async(UA_Server *server, UA_Session *session,
-           const UA_ReadValueId *operation, UA_TimestampsToReturn ttr,
-           UA_ServerAsyncReadResultCallback callback,
-           void *context, UA_UInt32 timeout) {
-    return readOptionalNode_async(server, session, NULL, operation, ttr,
-                                  callback, context, timeout);
-}
-
-UA_StatusCode
-readWithNode_async(UA_Server *server, UA_Session *session,
-                   const UA_Node *node, const UA_ReadValueId *operation,
-                   UA_TimestampsToReturn ttr,
-                   UA_ServerAsyncReadResultCallback callback,
-                   void *context, UA_UInt32 timeout) {
-    UA_LOCK_ASSERT(&server->serviceMutex);
-    UA_assert(node != NULL);
-    UA_assert(UA_NodeId_equal(&node->head.nodeId, &operation->nodeId));
-    return readOptionalNode_async(server, session, node, operation, ttr,
-                                  callback, context, timeout);
 }
 
 UA_StatusCode
@@ -751,11 +723,10 @@ Service_Write(UA_Server *server, UA_Session *session,
     return (ar->opCountdown == 0);
 }
 
-static UA_StatusCode
-writeOptionalNode_async(UA_Server *server, UA_Session *session,
-                        UA_Node *node, const UA_WriteValue *operation,
-                        UA_ServerAsyncWriteResultCallback callback,
-                        void *context, UA_UInt32 timeout) {
+UA_StatusCode
+write_async(UA_Server *server, UA_Session *session, const UA_WriteValue *operation,
+            UA_ServerAsyncWriteResultCallback callback, void *context,
+            UA_UInt32 timeout) {
     /* Allocate the async operation. Do this first as we need the pointer to the
      * datavalue to be stable.*/
     UA_AsyncOperation *op = (UA_AsyncOperation*)UA_calloc(1, sizeof(UA_AsyncOperation));
@@ -778,12 +749,8 @@ writeOptionalNode_async(UA_Server *server, UA_Session *session,
 
     /* Call the operation */
     op->context.writeValue = *operation; /* Stable pointer */
-    UA_Boolean done = node ?
-        Operation_WriteWithNode(server, session, node,
-                                &op->context.writeValue,
-                                &op->output.directWrite) :
-        Operation_Write(server, session, &op->context.writeValue,
-                        &op->output.directWrite);
+    UA_Boolean done = Operation_Write(server, session, &op->context.writeValue,
+                                      &op->output.directWrite);
     if(!done)
         return persistAsyncDirectOperation(server, op, UA_ASYNCOPERATIONTYPE_WRITE_DIRECT,
                                            context, (uintptr_t)callback, timeoutDate);
@@ -792,27 +759,6 @@ writeOptionalNode_async(UA_Server *server, UA_Session *session,
     callback(server, context, op->output.directWrite);
     UA_free(op);
     return UA_STATUSCODE_GOOD;
-}
-
-UA_StatusCode
-write_async(UA_Server *server, UA_Session *session,
-            const UA_WriteValue *operation,
-            UA_ServerAsyncWriteResultCallback callback, void *context,
-            UA_UInt32 timeout) {
-    return writeOptionalNode_async(server, session, NULL, operation,
-                                   callback, context, timeout);
-}
-
-UA_StatusCode
-writeWithNode_async(UA_Server *server, UA_Session *session,
-                    UA_Node *node, const UA_WriteValue *operation,
-                    UA_ServerAsyncWriteResultCallback callback,
-                    void *context, UA_UInt32 timeout) {
-    UA_LOCK_ASSERT(&server->serviceMutex);
-    UA_assert(node != NULL);
-    UA_assert(UA_NodeId_equal(&node->head.nodeId, &operation->nodeId));
-    return writeOptionalNode_async(server, session, node, operation,
-                                   callback, context, timeout);
 }
 
 UA_StatusCode

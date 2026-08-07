@@ -33,6 +33,23 @@
 #ifdef UA_ENABLE_HISTORIZING
 #include <open62541/plugin/historydatabase.h>
 #endif
+#include <stdio.h>
+
+static void DBG2(const char* msg)
+{
+    if (msg == NULL)
+        return;
+
+    FILE* f;
+    fopen_s(&f, "---opc_diag.log", "a");
+    if (!f)
+        return;
+
+    fputs(msg, f);
+    fputc('\n', f);
+
+    fclose(f);
+}
 
 static const UA_NodeAttributesMask attr2mask[28] = {
     UA_NODEATTRIBUTESMASK_NODEID,
@@ -512,13 +529,10 @@ buildEnumDefinitionFromProperties(UA_Server *server, const UA_NodeId *dataTypeId
 
 /* Returns whether the operation is done or an async operation has been
  * triggered. */
-UA_Boolean
-Operation_ReadWithNode(UA_Server *server, UA_Session *session,
-                       const UA_Node *node,
+static UA_Boolean
+ReadWithNodeMaybeAsync(const UA_Node *node, UA_Server *server, UA_Session *session,
                        UA_TimestampsToReturn timestampsToReturn,
                        const UA_ReadValueId *id, UA_DataValue *v) {
-    UA_LOCK_ASSERT(&server->serviceMutex);
-    UA_assert(node != NULL);
     UA_LOG_TRACE_SESSION(server->config.logging, session,
                          "Read attribute %"PRIi32 " of Node %N",
                          id->attributeId, node->head.nodeId);
@@ -805,7 +819,6 @@ Operation_ReadWithNode(UA_Server *server, UA_Session *session,
      * error has occurred. */
     if(retval == UA_STATUSCODE_GOOD &&
        v->hasValue && UA_Variant_isEmpty(&v->value) &&
-       (!v->hasStatus || !UA_StatusCode_isBad(v->status)) &&
        (node->head.nodeClass == UA_NODECLASS_VARIABLE ||
         node->head.nodeClass == UA_NODECLASS_VARIABLETYPE) &&
        !isNullableDataType(server, &node->variableNode.dataType)) {
@@ -836,7 +849,7 @@ Operation_Read(UA_Server *server, UA_Session *session,
     }
 
     /* Perform the read operation */
-    UA_Boolean done = Operation_ReadWithNode(server, session, node, ttr, rvi, dv);
+    UA_Boolean done = ReadWithNodeMaybeAsync(node, server, session, ttr, rvi, dv);
     UA_NODESTORE_RELEASE(server, node);
     return done;
 }
@@ -1219,40 +1232,135 @@ compatibleValueRanks(UA_Int32 valueRank, UA_Int32 constraintValueRank) {
  * permissive than checking for the ArrayDimensions attribute. Because the value
  * can have dimensions if the ValueRank < 0 */
 static UA_Boolean
-compatibleValueRankValue(UA_Int32 valueRank, const UA_Variant *value) {
+compatibleValueRankValue(UA_Int32 valueRank, const UA_Variant* value) {
+
     /* Invalid ValueRank */
-    if(valueRank < UA_VALUERANK_SCALAR_OR_ONE_DIMENSION)
+    if (valueRank < UA_VALUERANK_SCALAR_OR_ONE_DIMENSION)
         return false;
 
     /* Empty arrays (-1) always match */
-    if(!value->data)
+    if (!value->data)
         return true;
 
     size_t arrayDims = value->arrayDimensionsSize;
-    if(arrayDims == 0 && !UA_Variant_isScalar(value))
+    if (arrayDims == 0 && !UA_Variant_isScalar(value))
         arrayDims = 1; /* array but no arraydimensions -> implicit array dimension 1 */
 
-    /* We cannot simply use compatibleValueRankArrayDimensions since we can have
-     * defined ArrayDimensions for the value if the ValueRank is -2 */
-    switch(valueRank) {
-    case UA_VALUERANK_SCALAR_OR_ONE_DIMENSION: /* The value can be a scalar or a
-                                                  one dimensional array */
-        return (arrayDims <= 1);
-    case UA_VALUERANK_ANY: /* The value can be a scalar or an array with any
-                              number of dimensions */
+    char b301[256];
+    sprintf(b301,
+        "CVRV enter valueRank=%d arrayDims=%u isScalar=%d",
+        (int)valueRank,
+        (unsigned)arrayDims,
+        (int)UA_Variant_isScalar(value));
+    DBG2(b301);
+
+
+    char b302[256];
+
+    sprintf(b302,
+        "CONST: SCALAR_OR_ONE_DIM=%d  ANY=%d  SCALAR=%d  ONE_OR_MORE=%d",
+        UA_VALUERANK_SCALAR_OR_ONE_DIMENSION,
+        UA_VALUERANK_ANY,
+        UA_VALUERANK_SCALAR,
+        UA_VALUERANK_ONE_OR_MORE_DIMENSIONS);
+
+    DBG2(b302);
+
+
+
+    char b303[256];
+
+    sprintf(b303,
+        "COMPARE valueRank=%d  ==SCALAR(%d)=%d  ==ANY(%d)=%d  ==ONE(%d)=%d",
+        (int)valueRank,
+        (int)UA_VALUERANK_SCALAR,
+        (valueRank == UA_VALUERANK_SCALAR),
+
+        (int)UA_VALUERANK_ANY,
+        (valueRank == UA_VALUERANK_ANY),
+
+        (int)UA_VALUERANK_ONE_OR_MORE_DIMENSIONS,
+        (valueRank == UA_VALUERANK_ONE_OR_MORE_DIMENSIONS));
+
+    DBG2(b303);
+
+    sprintf(b303,
+        "switch input raw=%08X",
+        (unsigned)valueRank);
+    DBG2(b303);
+
+
+
+    sprintf(b303,
+        "Variant.type=%p  typeKind=%d",
+        (void*)value->type,
+        value->type ? (int)value->type->typeKind : -1);
+    DBG2(b303);
+
+    if (value->type) {
+        sprintf(b303,
+            "TypeId ns=%u id=%u",
+            value->type->typeId.namespaceIndex,
+            value->type->typeId.identifier.numeric);
+        DBG2(b303);
+    }
+
+
+
+
+
+    switch (valueRank) {
+
+    case UA_VALUERANK_SCALAR_OR_ONE_DIMENSION:
+    {
+        UA_Boolean ok = (arrayDims <= 1);
+        sprintf(b301,
+            "CVRV SCALAR_OR_ONE_DIMENSION -> %d",
+            (int)ok);
+        DBG2(b301);
+        return ok;
+    }
+
+    case UA_VALUERANK_ANY:
+        DBG2("CVRV ANY -> TRUE");
         return true;
-    case UA_VALUERANK_SCALAR: /* The value is a scalar */
-        return (arrayDims == 0);
+
+    case UA_VALUERANK_SCALAR:
+    {
+        UA_Boolean ok = (arrayDims == 0);
+        sprintf(b301,
+            "CVRV SCALAR -> %d",
+            (int)ok);
+        DBG2(b301);
+        return ok;
+    }
+
     case UA_VALUERANK_ONE_OR_MORE_DIMENSIONS:
-        return (arrayDims >= 1);
+    {
+        UA_Boolean ok = (arrayDims >= 1);
+        sprintf(b301,
+            "CVRV ONE_OR_MORE -> %d",
+            (int)ok);
+        DBG2(b301);
+        return ok;
+    }
+
     default:
         break;
     }
 
     UA_assert(valueRank >= UA_VALUERANK_ONE_OR_MORE_DIMENSIONS);
 
-    /* case 0:  the value is an array with one or more dimensions */
-    return (arrayDims == (UA_UInt32)valueRank);
+    {
+        UA_Boolean ok = (arrayDims == (UA_UInt32)valueRank);
+
+        sprintf(b301,
+            "CVRV DEFAULT -> %d",
+            (int)ok);
+        DBG2(b301);
+
+        return ok;
+    }
 }
 
 UA_Boolean
@@ -1359,6 +1467,41 @@ compatibleValue(UA_Server *server, UA_Session *session, const UA_NodeId *targetD
         *reason = reason_ValueArrayDimensions;
         return false;
     }
+
+    char b200[256];
+
+    sprintf(b200,
+        "compatibleValueRankValue: targetValueRank=%d arrayLength=%u arrayDimensionsSize=%u",
+        (int)targetValueRank,
+        (unsigned)value->arrayLength,
+        (unsigned)value->arrayDimensionsSize);
+    DBG2(b200);
+
+    sprintf(b200,
+        "Variant_isScalar=%d",
+        (int)UA_Variant_isScalar(value));
+    DBG2(b200);
+
+
+
+    char b300[256];
+
+    sprintf(b300,
+        "compatibleValue: valueRank=%d arrayLength=%u arrayDimensionsSize=%u isScalar=%d",
+        (int)targetValueRank,
+        (unsigned)value->arrayLength,
+        (unsigned)value->arrayDimensionsSize,
+        (int)UA_Variant_isScalar(value));
+    DBG2(b300);
+
+
+
+
+
+
+
+
+
 
     /* Check if the valuerank allows for the value dimension */
     if(!compatibleValueRankValue(targetValueRank, value)) {
@@ -1588,11 +1731,24 @@ writeDataTypeAttribute(UA_Server *server, UA_Session *session,
         return retval;
     if(value.hasValue) {
         const char *reason; /* temp value */
+
+
+        char b[256];
+
+
+        DBG2(b);
+
+        sprintf(b,
+            "arrayDimensionsSize=%u",
+            (unsigned)node->arrayDimensionsSize);
+        DBG2(b);
+
         if(!compatibleValue(server, session, dataType, node->valueRank,
                             node->arrayDimensionsSize, node->arrayDimensions,
                             &value.value, NULL, &reason))
             retval = UA_STATUSCODE_BADTYPEMISMATCH;
         UA_DataValue_clear(&value);
+        DBG2("calling compatibleValue...");
         if(retval != UA_STATUSCODE_GOOD) {
             UA_LOG_DEBUG(server->config.logging, UA_LOGCATEGORY_SERVER,
                          "The current value does not match the new data type");
@@ -1658,6 +1814,10 @@ static UA_StatusCode
 writeNodeValueAttribute(UA_Server *server, UA_Session *session,
                         UA_VariableNode *node, const UA_DataValue *value,
                         const UA_String *indexRange) {
+
+
+    DBG2(">>> writeNodeValueAttribute");
+
     UA_assert(node != NULL);
     UA_assert(session != NULL);
     UA_LOCK_ASSERT(&server->serviceMutex);
@@ -1669,8 +1829,10 @@ writeNodeValueAttribute(UA_Server *server, UA_Session *session,
     UA_StatusCode retval = UA_STATUSCODE_GOOD;
     if(indexRange && indexRange->length > 0) {
         retval = UA_NumericRange_parse(&range, *indexRange);
-        if(retval != UA_STATUSCODE_GOOD)
+        if (retval != UA_STATUSCODE_GOOD) {
+            DBG2("FAIL: NumericRange_parse");
             return retval;
+        }
         rangeptr = &range;
     }
 
@@ -1683,10 +1845,56 @@ writeNodeValueAttribute(UA_Server *server, UA_Session *session,
         /* Try to correct the type */
         adjustValueType(server, &adjustedValue.value, &node->dataType);
 
+        char b[256];
+        sprintf(b,
+            "Variant arrayLength=%u storageType=%d data=%p",
+            (unsigned)adjustedValue.value.arrayLength,
+            (int)adjustedValue.value.storageType,
+            adjustedValue.value.data);
+        DBG2(b);
+        if (adjustedValue.value.type)
+            DBG2("Variant.type != NULL");
+        else
+            DBG2("Variant.type == NULL");
+
+
+
+        DBG2("adjustValueType OK");
+
+
+        char b100[256];
+        sprintf(b100,
+            "Variant arrayLength=%u  isScalar=%d  data=%p  valueRank=%d",
+            (unsigned)adjustedValue.value.arrayLength,
+            UA_Variant_isScalar(&adjustedValue.value),
+            adjustedValue.value.data,
+            node->valueRank);
+        DBG2(b100);
+
+
+
+
+
+
+
+
+        char b2[128];
+
+        snprintf(b2, sizeof(b2),
+            "node->valueRank=%d",
+            node->valueRank);
+        DBG2(b2);
+
+        snprintf(b2, sizeof(b2),
+            "node->arrayDimensionsSize=%u",
+            (unsigned)node->arrayDimensionsSize);
+        DBG2(b2);
+
         /* Check the type */
         if(!compatibleValue(server, session, &node->dataType, node->valueRank,
                             node->arrayDimensionsSize, node->arrayDimensions,
                             &adjustedValue.value, rangeptr, &reason)) {
+
             if(session == &server->adminSession) {
                 /* If the value is written via the local API, log a warning */
                 UA_LOG_WARNING_SESSION(server->config.logging, session,
@@ -1700,6 +1908,8 @@ writeNodeValueAttribute(UA_Server *server, UA_Session *session,
             }
             if(rangeptr && rangeptr->dimensions != NULL)
                 UA_free(rangeptr->dimensions);
+            DBG2("FAIL: compatibleValue");
+            DBG2(reason ? reason : "reason == NULL");
             return UA_STATUSCODE_BADTYPEMISMATCH;
         }
     /* Reject writing a null/empty value for non-nullable data types.
@@ -1709,6 +1919,7 @@ writeNodeValueAttribute(UA_Server *server, UA_Session *session,
      * Datatype". Without this check the node is left in a state that returns
      * BadWaitingForInitialData on subsequent reads. */
     } else if(!isNullableDataType(server, &node->dataType)) {
+        DBG2("FAIL: NULL value for non-nullable datatype");
         if(rangeptr && rangeptr->dimensions != NULL)
             UA_free(rangeptr->dimensions);
         return UA_STATUSCODE_BADTYPEMISMATCH;
@@ -1722,13 +1933,21 @@ writeNodeValueAttribute(UA_Server *server, UA_Session *session,
     }
 
     /* Write into the different value source backends. */
+
     retval = UA_STATUSCODE_BADWRITENOTSUPPORTED; /* default */
+    DBG2("ValueSourceType switch");
     switch(node->valueSourceType) {
     case UA_VALUESOURCETYPE_EXTERNAL:
     case UA_VALUESOURCETYPE_INTERNAL: {
+        DBG2("case INTERNAL");
         UA_DataValue *oldValue = (node->valueSourceType == UA_VALUESOURCETYPE_INTERNAL) ?
             &node->valueSource.internal.value : UA_atomic_load(node->valueSource.external.value);
         retval = writeInternalValueAttribute(oldValue, &adjustedValue, rangeptr);
+        char b[80];
+        snprintf(b, sizeof(b),
+            "writeInternalValueAttribute=0x%08X",
+            (unsigned)retval);
+        DBG2(b);
         if(retval == UA_STATUSCODE_GOOD &&
            node->valueSource.internal.notifications.onWrite)
             node->valueSource.internal.notifications.
@@ -1740,6 +1959,7 @@ writeNodeValueAttribute(UA_Server *server, UA_Session *session,
         /* The value-pointer needs to be forwarded into the value-callback. The
          * pointer is used as the key to look up async operation entries. So we
          * make a temp copy and fill "adjustedvalue" into the value-memory. */
+        DBG2("case CALLBACK");
         UA_DataValue oldv = *value;
         UA_DataValue *editValue = (UA_DataValue*)(uintptr_t)value;
         *editValue = adjustedValue;
@@ -1780,6 +2000,11 @@ writeNodeValueAttribute(UA_Server *server, UA_Session *session,
     /* Clean up */
     if(rangeptr && rangeptr->dimensions != NULL)
         UA_free(rangeptr->dimensions);
+    char b[80];
+    snprintf(b, sizeof(b),
+        "writeNodeValueAttribute return=0x%08X",
+        (unsigned)retval);
+    DBG2(b);
     return retval;
 }
 
@@ -1893,8 +2118,7 @@ triggerImmediateDataChange(UA_Server *server, UA_Session *session,
         UA_DataValue value;
         UA_DataValue_init(&value);
         UA_Boolean done =
-            Operation_ReadWithNode(server, session, node,
-                                   mon->timestampsToReturn,
+            ReadWithNodeMaybeAsync(node, server, session, mon->timestampsToReturn,
                                    &mon->itemToMonitor, &value);
         if(!done) {
             if(server->config.asyncOperationCancelCallback)
@@ -2151,30 +2375,30 @@ copyAttributeIntoNode(UA_Server *server, UA_Session *session,
 }
 
 UA_Boolean
-Operation_WriteWithNode(UA_Server *server, UA_Session *session,
-                        UA_Node *node, const UA_WriteValue *wv,
-                        UA_StatusCode *result) {
-    UA_LOCK_ASSERT(&server->serviceMutex);
+Operation_Write(UA_Server *server, UA_Session *session,
+                const UA_WriteValue *wv, UA_StatusCode *result) {
     UA_assert(session != NULL);
-    UA_assert(node != NULL);
-    UA_assert(UA_NodeId_equal(&node->head.nodeId, &wv->nodeId));
     beginModelChange(server);
 
     /* DataType is an inline attribute. Remember its previous value so a
      * same-value write does not produce a spurious DataTypeChanged event. */
     UA_Boolean dataTypeChanged = false;
-    if(wv->attributeId == UA_ATTRIBUTEID_DATATYPE &&
-       (node->head.nodeClass == UA_NODECLASS_VARIABLE ||
-        node->head.nodeClass == UA_NODECLASS_VARIABLETYPE)) {
-        const UA_NodeId *oldDataType =
-            (node->head.nodeClass == UA_NODECLASS_VARIABLE) ?
-            &node->variableNode.dataType : &node->variableTypeNode.dataType;
-        if(wv->value.value.data &&
-           UA_NodeId_equal(oldDataType,
-                           (const UA_NodeId*)wv->value.value.data))
-            dataTypeChanged = false;
-        else
-            dataTypeChanged = true;
+    if(wv->attributeId == UA_ATTRIBUTEID_DATATYPE) {
+        const UA_Node *oldNode = UA_NODESTORE_GET(server, &wv->nodeId);
+        if(oldNode && (oldNode->head.nodeClass == UA_NODECLASS_VARIABLE ||
+                       oldNode->head.nodeClass == UA_NODECLASS_VARIABLETYPE)) {
+            const UA_NodeId *oldDataType =
+                (oldNode->head.nodeClass == UA_NODECLASS_VARIABLE) ?
+                &oldNode->variableNode.dataType : &oldNode->variableTypeNode.dataType;
+            if(wv->value.value.data &&
+               UA_NodeId_equal(oldDataType,
+                               (const UA_NodeId*)wv->value.value.data))
+                dataTypeChanged = false;
+            else
+                dataTypeChanged = true;
+        }
+        if(oldNode)
+            UA_NODESTORE_RELEASE(server, oldNode);
     }
 
     /* Get the old value for the audit event */
@@ -2188,24 +2412,17 @@ Operation_WriteWithNode(UA_Server *server, UA_Session *session,
         rvi.nodeId = wv->nodeId;
         rvi.attributeId = wv->attributeId;
         rvi.indexRange = wv->indexRange;
-        UA_DataValue_init(&oldValue);
-        UA_Boolean readDone = Operation_ReadWithNode(
-            server, session, node, UA_TIMESTAMPSTORETURN_NEITHER,
-            &rvi, &oldValue);
-        if(!readDone) {
-            if(server->config.asyncOperationCancelCallback)
-                server->config.asyncOperationCancelCallback(server, &oldValue);
-            oldValue.hasStatus = true;
-            oldValue.status = UA_STATUSCODE_BADWAITINGFORRESPONSE;
-        }
+        oldValue = readWithSession(server, session, &rvi, UA_TIMESTAMPSTORETURN_NEITHER);
         server->preventAuditEventRecursion = false;
     } else {
         UA_DataValue_init(&oldValue);
     }
 #endif
 
-    *result = copyAttributeIntoNode(server, session, node,
-                                    (void*)(uintptr_t)wv);
+    *result = editNode(server, session, &wv->nodeId, wv->attributeId,
+                       UA_REFERENCETYPESET_NONE, UA_BROWSEDIRECTION_INVALID,
+                       copyAttributeIntoNode,
+                       (void*)(uintptr_t)wv);
     UA_Boolean done = (*result != UA_STATUSCODE_GOODCOMPLETESASYNCHRONOUSLY);
 
     /* Only DataType changes are structural model changes. ValueRank and
@@ -2230,23 +2447,6 @@ Operation_WriteWithNode(UA_Server *server, UA_Session *session,
 #endif
 
     endModelChange(server);
-    return done;
-}
-
-UA_Boolean
-Operation_Write(UA_Server *server, UA_Session *session,
-                const UA_WriteValue *wv, UA_StatusCode *result) {
-    UA_Node *node =
-        UA_NODESTORE_GET_EDIT_SELECTIVE(server, &wv->nodeId, wv->attributeId,
-                                        UA_REFERENCETYPESET_NONE,
-                                        UA_BROWSEDIRECTION_INVALID);
-    if(!node) {
-        *result = UA_STATUSCODE_BADNODEIDUNKNOWN;
-        return true;
-    }
-
-    UA_Boolean done = Operation_WriteWithNode(server, session, node, wv, result);
-    UA_NODESTORE_RELEASE(server, node);
     return done;
 }
 

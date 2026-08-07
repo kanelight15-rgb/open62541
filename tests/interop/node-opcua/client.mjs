@@ -23,13 +23,11 @@ import {
     Variant,
     StatusCodes,
 } from "node-opcua";
-import { readCertificate } from "node-opcua-crypto";
 
 import { readFileSync, mkdtempSync, mkdirSync, cpSync } from "fs";
 import { X509Certificate } from "crypto";
 import { tmpdir } from "os";
 import { join } from "path";
-import { pathToFileURL } from "url";
 
 // ---------------------------------------------------------------------------
 // Parse arguments
@@ -52,7 +50,6 @@ if (!serverUrl || !clientCertFile || !clientKeyFile || !serverCertFile) {
 let passed = 0;
 let failed = 0;
 let skipped = 0;
-let clientTransportFactory;
 
 function PASS(name) {
     console.log(`  PASS: ${name}`);
@@ -121,17 +118,9 @@ async function createClient(securityPolicy, securityMode) {
         endpointMustExist: false,
         clientCertificateManager,
     };
-    if (clientTransportFactory) {
-        opts.transportFactory = clientTransportFactory;
-    }
     if (securityPolicy !== SecurityPolicy.None) {
         opts.certificateFile = clientCertFile;
         opts.privateKeyFile = clientKeyFile;
-        // node-opcua's temporary endpoint-discovery client does not inherit a
-        // custom transportFactory. Supplying the expected certificate avoids
-        // that TCP-only discovery connection for secure WebSocket endpoints.
-        if (clientTransportFactory)
-            opts.serverCertificate = readCertificate(serverCertFile);
         // Set applicationUri to match the certificate's SAN URI so the server
         // doesn't reject the connection with BadCertificateUriInvalid.
         const appUri = getAppUri(clientCertFile);
@@ -148,8 +137,6 @@ function isSkippableSecurityError(msg) {
     return (
         msg.includes("BadSecurityPolicyRejected") ||
         msg.includes("Cannot find an Endpoint matching") ||
-        msg.includes("invalid securityPolicy") ||
-        msg.includes("is not supported") ||
         msg.includes("getEndpoints")
     );
 }
@@ -504,8 +491,7 @@ async function runEccTests() {
 // Main
 // ---------------------------------------------------------------------------
 
-export async function runInteropClient(transportFactory) {
-    clientTransportFactory = transportFactory;
+async function main() {
     console.log("node-opcua interop client test suite");
     console.log(`  Server URL: ${serverUrl}`);
     console.log(`  Client cert: ${clientCertFile}`);
@@ -529,9 +515,7 @@ export async function runInteropClient(transportFactory) {
     process.exit(failed > 0 ? 1 : 0);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-    runInteropClient().catch((err) => {
-        console.error("Fatal error:", err.message || err);
-        process.exit(1);
-    });
-}
+main().catch((err) => {
+    console.error("Fatal error:", err.message || err);
+    process.exit(1);
+});

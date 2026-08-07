@@ -139,7 +139,6 @@ struct UA_Server {
      * have direct pointers for fast access below. */
     UA_Driver *drivers; /* linked-list of all SC */
     UA_Driver *binaryDriver;
-    UA_Driver *webSocketDriver;
     UA_Driver *reverseBinaryDriver;
     UA_Driver *discoveryDriver;
     UA_Driver *pubSubDriver;
@@ -681,36 +680,6 @@ readWithSession(UA_Server *server, UA_Session *session,
                 const UA_ReadValueId *item,
                 UA_TimestampsToReturn timestampsToReturn);
 
-/* Execute attribute operations for a node that is already borrowed from the
- * nodestore. These are the pointer-based cores of Operation_Read and
- * Operation_Write. The caller must hold the service mutex and keep the node
- * alive for the duration of the call. */
-UA_Boolean
-Operation_ReadWithNode(UA_Server *server, UA_Session *session,
-                       const UA_Node *node, UA_TimestampsToReturn ttr,
-                       const UA_ReadValueId *rvi, UA_DataValue *dv);
-
-UA_Boolean
-Operation_WriteWithNode(UA_Server *server, UA_Session *session,
-                        UA_Node *node, const UA_WriteValue *wv,
-                        UA_StatusCode *result);
-
-/* Direct asynchronous wrappers for callers that already own a stable node
- * pointer. They retain the same async-operation storage and callbacks as the
- * NodeId-based UA_Server_*_async entry points. */
-UA_StatusCode
-readWithNode_async(UA_Server *server, UA_Session *session,
-                   const UA_Node *node, const UA_ReadValueId *operation,
-                   UA_TimestampsToReturn ttr,
-                   UA_ServerAsyncReadResultCallback callback,
-                   void *context, UA_UInt32 timeout);
-
-UA_StatusCode
-writeWithNode_async(UA_Server *server, UA_Session *session,
-                    UA_Node *node, const UA_WriteValue *operation,
-                    UA_ServerAsyncWriteResultCallback callback,
-                    void *context, UA_UInt32 timeout);
-
 UA_StatusCode
 readWithReadValue(UA_Server *server, const UA_NodeId *nodeId,
                   const UA_AttributeId attributeId, void *v);
@@ -722,14 +691,6 @@ readObjectProperty(UA_Server *server, const UA_NodeId objectId,
 
 UA_BrowsePathResult
 translateBrowsePathToNodeIds(UA_Server *server, const UA_BrowsePath *browsePath);
-
-/* Translate from a node that is already borrowed from the nodestore. The
- * caller must hold the service mutex and keep the node alive for the duration
- * of the operation. */
-UA_BrowsePathResult
-translateBrowsePathToNodeIdsWithNode(UA_Server *server,
-                                     const UA_Node *startingNode,
-                                     const UA_BrowsePath *browsePath);
 
 /* Returns the "best" configured SecurityPolicy with encryption. The _NONE type
  * is the wildcard for any SecurityPolicy. */
@@ -779,57 +740,7 @@ UA_Driver * UA_DiscoveryManager_new(void);
 void cleanupRegisteredServers(UA_Server *server);
 #endif
 
-/* Binary protocol handling shared by stream-based server transports */
-#define UA_MAXSERVERCONNECTIONS 16
-
-typedef struct {
-    UA_ConnectionState state;
-    uintptr_t connectionId;
-    UA_ConnectionManager *connectionManager;
-} UA_ServerConnection;
-
-typedef struct UA_BinaryProtocolManager UA_BinaryProtocolManager;
-
-typedef UA_StatusCode
-(*UA_BinaryProtocolManagerStartTransport)(UA_BinaryProtocolManager *bpm);
-
-typedef void
-(*UA_BinaryProtocolManagerAddDiscoveryUrl)(UA_BinaryProtocolManager *bpm,
-                                           const UA_KeyValueMap *params);
-
-struct UA_BinaryProtocolManager {
-    UA_Driver drv;
-    const UA_Logger *logging; /* shortcut */
-    UA_String protocolName;   /* Transport name used for logging */
-    UA_UInt64 houseKeepingCallbackId;
-    UA_ConnectionConfig connectionConfig;
-
-    UA_ServerConnection serverConnections[UA_MAXSERVERCONNECTIONS];
-    size_t serverConnectionsSize;
-
-    /* SecureChannels */
-    TAILQ_HEAD(, UA_SecureChannel) channels;
-
-    /* Transport-specific setup and discovery handling */
-    UA_BinaryProtocolManagerStartTransport startTransport;
-    UA_BinaryProtocolManagerAddDiscoveryUrl addDiscoveryUrl;
-};
-
-void
-UA_BinaryProtocolManager_init(UA_BinaryProtocolManager *bpm,
-                              const UA_String name,
-                              const UA_String protocolName,
-                              UA_BinaryProtocolManagerStartTransport startTransport,
-                              UA_BinaryProtocolManagerAddDiscoveryUrl addDiscoveryUrl);
-
-void
-UA_BinaryConnectionConfig_set(UA_ConnectionConfig *connectionConfig,
-                              UA_UInt32 bufSize, UA_UInt32 maxMsgSize,
-                              UA_UInt32 maxChunks);
-
 UA_Driver * UA_BinaryProtocolManager_new(void);
-
-UA_Driver * UA_WebSocketProtocolManager_new(void);
 
 UA_Driver * UA_ReverseBinaryProtocolManager_new(void);
 
@@ -839,9 +750,7 @@ processSecureChannelMessage(UA_Server *server, UA_SecureChannel *channel,
                             UA_ByteString *message);
 
 UA_StatusCode
-createServerSecureChannel(UA_Server *server,
-                          const UA_ConnectionConfig *connectionConfig,
-                          UA_ConnectionManager *cm,
+createServerSecureChannel(UA_Server *server, UA_ConnectionManager *cm,
                           uintptr_t connectionId, const UA_KeyValueMap *params,
                           UA_SecureChannel **outChannel);
 
@@ -977,15 +886,6 @@ Operation_Browse(UA_Server *server, UA_Session *session,
                  const void *request /* UA_BrowseDescription */,
                  void *response /* UA_BrowseResult */);
 
-/* Browse a node already borrowed from the nodestore. The caller must hold the
- * service mutex and keep the node alive for the duration of the operation. */
-void
-Operation_BrowseWithNode(UA_Server *server, UA_Session *session,
-                         const UA_Node *node,
-                         const void *context /* UA_UInt32 */,
-                         const void *request /* UA_BrowseDescription */,
-                         void *response /* UA_BrowseResult */);
-
 /* External data either from a datasource callback or with a _beforeRead
  * callback where fresh values get switched in on demand. Variables with an
  * external data source require monitoring with a sampling interval. As we
@@ -1037,23 +937,9 @@ addNode_addRefs(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId,
                 const UA_NodeId *parentNodeId, const UA_NodeId *referenceTypeId,
                 const UA_NodeId *typeDefinitionId);
 
-/* Complete the begin phase for a node already inserted by addNode_raw. Adds
- * defining references and runs the early constructors. Deletes the raw node
- * on failure. */
-UA_StatusCode
-addNode_prepare(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId,
-                const UA_NodeId *parentNodeId, const UA_NodeId *referenceTypeId,
-                const UA_NodeId *typeDefinitionId);
-
 /* Type-check type-definition; Run the constructors */
 UA_StatusCode
 addNode_finish(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId);
-
-/* Call the global early constructor after the defining references have been
- * added and before automatic child instantiation. */
-UA_StatusCode
-callEarlyConstructors(UA_Server *server, UA_Session *session,
-                      const UA_NodeId *nodeId);
 
 /**********************/
 /* Create Namespace 0 */

@@ -19,12 +19,22 @@
  *    Copyright 2026 (c) o6 Automation GmbH (Author: Andreas Ebner)
  */
 
+#include <stdio.h>
 #include "ua_server_internal.h"
 #include "ua_services.h"
 
 #ifdef UA_ENABLE_RBAC
 #include "ua_server_rbac.h"
 #endif
+
+static void DBG(const char* msg) {
+    FILE* f = fopen("---opc_diag.log", "a");
+    if (!f)
+        return;
+    fprintf(f, "%s\n", msg);
+    fclose(f);
+}
+
 
 /*********************/
 /* Edit Node Context */
@@ -85,66 +95,6 @@ UA_Server_setNodeContext(UA_Server *server, UA_NodeId nodeId,
     UA_StatusCode retval = setNodeContext(server, nodeId, nodeContext);
     unlockServer(server);
     return retval;
-}
-
-/* Run the first lifecycle phase once the raw node and its defining references
- * are available, but before automatic child instantiation. */
-UA_StatusCode
-callEarlyConstructors(UA_Server *server, UA_Session *session,
-                      const UA_NodeId *nodeId) {
-    const UA_Node *node = UA_NODESTORE_GET(server, nodeId);
-    if(!node)
-        return UA_STATUSCODE_BADNODEIDUNKNOWN;
-    void *context = node->head.context;
-    UA_NodeClass nodeClass = node->head.nodeClass;
-    UA_NODESTORE_RELEASE(server, node);
-
-    UA_Boolean called = false;
-    UA_GlobalNodeLifecycle *global = server->config.nodeLifecycle;
-    if(global && global->earlyConstructor) {
-        called = true;
-        UA_StatusCode retval =
-            global->earlyConstructor(server, &session->sessionId,
-                                     session->context, nodeId, &context);
-        if(retval != UA_STATUSCODE_GOOD)
-            return retval;
-    }
-
-    /* Resolve the type after the global callback. It may have changed the
-     * defining references. A missing type is allowed here: addNode_begin also
-     * supports nodes whose references are completed manually before _finish. */
-    if(nodeClass == UA_NODECLASS_OBJECT ||
-       nodeClass == UA_NODECLASS_VARIABLE) {
-        node = UA_NODESTORE_GET(server, nodeId);
-        if(!node)
-            return UA_STATUSCODE_BADNODEIDUNKNOWN;
-        const UA_Node *type =
-            getNodeType(server, &node->head, ~(UA_UInt32)0,
-                        UA_REFERENCETYPESET_ALL, UA_BROWSEDIRECTION_BOTH);
-        UA_NODESTORE_RELEASE(server, node);
-
-        if(type) {
-            const UA_NodeTypeLifecycle *lifecycle =
-                (nodeClass == UA_NODECLASS_OBJECT) ?
-                &type->objectTypeNode.lifecycle :
-                &type->variableTypeNode.lifecycle;
-            if(lifecycle->earlyConstructor) {
-                called = true;
-                UA_StatusCode retval = lifecycle->earlyConstructor(
-                    server, &session->sessionId, session->context,
-                    &type->head.nodeId, type->head.context, nodeId, &context);
-                UA_NODESTORE_RELEASE(server, type);
-                if(retval != UA_STATUSCODE_GOOD)
-                    return retval;
-            } else {
-                UA_NODESTORE_RELEASE(server, type);
-            }
-        }
-    }
-
-    if(!called)
-        return UA_STATUSCODE_GOOD;
-    return setNodeContext(server, *nodeId, context);
 }
 
 static UA_StatusCode
@@ -350,11 +300,15 @@ static UA_StatusCode
 typeCheckVariableNode(UA_Server *server, UA_Session *session,
                       const UA_VariableNode *node,
                       const UA_VariableTypeNode *vt) {
+    //DBG("typeCheckVariableNode ENTER");
     /* Check the datatype against the vt */
     if(!compatibleDataTypes(server, &node->dataType, &vt->dataType)) {
         logAddNode(server->config.logging, session, &node->head.nodeId,
                    "The value of is incompatible with "
                    "the datatype of the VariableType");
+
+        DBG("The value of is incompatible with the datatype of the VariableType");
+
         return UA_STATUSCODE_BADTYPEMISMATCH;
     }
 
@@ -363,6 +317,7 @@ typeCheckVariableNode(UA_Server *server, UA_Session *session,
                                            node->arrayDimensionsSize)) {
         logAddNode(server->config.logging, session, &node->head.nodeId,
                    "The value rank of is incompatible with its array dimensions");
+        DBG("The value rank of is incompatible with its array dimensions");
         return UA_STATUSCODE_BADTYPEMISMATCH;
     }
 
@@ -371,6 +326,7 @@ typeCheckVariableNode(UA_Server *server, UA_Session *session,
         logAddNode(server->config.logging, session, &node->head.nodeId,
                    "The value rank is incompatible "
                    "with the value rank of the VariableType");
+        DBG("The value rank of is incompatible with the value rank of the VariableType");
         return UA_STATUSCODE_BADTYPEMISMATCH;
     }
 
@@ -380,6 +336,7 @@ typeCheckVariableNode(UA_Server *server, UA_Session *session,
         logAddNode(server->config.logging, session, &node->head.nodeId,
                    "The array dimensions are incompatible with the "
                    "array dimensions of the VariableType");
+        DBG("The value rank of is incompatible with the array dimensions of the VariableType");
         return UA_STATUSCODE_BADTYPEMISMATCH;
     }
 
@@ -393,24 +350,38 @@ typeCheckVariableNode(UA_Server *server, UA_Session *session,
     UA_DataValue value;
     UA_DataValue_init(&value);
     UA_StatusCode retval = readValueAttribute(server, session, node, &value);
+
+    DBG(value.hasValue ? "value.hasValue = TRUE"
+        : "value.hasValue = FALSE");
+
     if(retval != UA_STATUSCODE_GOOD)
         return retval;
 
     /* We have a value. Write it back to perform checks and adjustments. */
+
+    char buf[80];
+    snprintf(buf, sizeof(buf),
+        "valueSourceType=%u",
+        node->valueSourceType);
+    DBG(buf);
+
+
+
+
     const char *reason;
     if(node->valueSourceType == UA_VALUESOURCETYPE_INTERNAL && value.hasValue) {
         if(!compatibleValue(server, session, &node->dataType, node->valueRank,
                             node->arrayDimensionsSize, node->arrayDimensions,
                             &value.value, NULL, &reason)) {
-            /* This completes the AddNodes operation after its access check.
-             * The write path first adjusts equivalent wire types such as
-             * Int32 to an enum and then performs the final type check. Do not
-             * apply the new node's own write permissions while it is still
-             * being initialized. */
-            retval = writeAttribute(server, &server->adminSession,
-                                    &node->head.nodeId,
+            retval = writeAttribute(server, session, &node->head.nodeId,
                                     UA_ATTRIBUTEID_VALUE, &value.value,
                                     &UA_TYPES[UA_TYPES_VARIANT]);
+
+            snprintf(buf, sizeof(buf),
+                "writeAttribute = 0x%08X",
+                retval);
+            DBG(buf);
+
         }
         UA_DataValue_clear(&value);
         return retval;
@@ -475,69 +446,150 @@ static const UA_NodeId hasTypeDefinition =
 /* Use attributes from the variable type wherever required. Reload the node if
  * changes were made. */
 static UA_StatusCode
-useVariableTypeAttributes(UA_Server *server, UA_Session *session,
-                          const UA_VariableNode *node,
-                          const UA_VariableTypeNode *vt) {
-    /* If no value is set, see if the vt provides one and copy it. This needs to
-     * be done before copying the datatype from the vt, as setting the datatype
-     * triggers a typecheck. */
+useVariableTypeAttributes(UA_Server* server, UA_Session* session,
+    const UA_VariableNode* node,
+    const UA_VariableTypeNode* vt) {
+
+    char b[256];
+
+    DBG("===== useVariableTypeAttributes =====");
+
+
+
+    char b400[256];
+
+    sprintf(b400,
+        "VT nodeId ns=%u id=%u",
+        (unsigned)vt->head.nodeId.namespaceIndex,
+        (unsigned)vt->head.nodeId.identifier.numeric);
+
+    DBG(b400);
+    sprintf(b400,
+        "NODE nodeId ns=%u id=%u",
+        (unsigned)node->head.nodeId.namespaceIndex,
+        (unsigned)node->head.nodeId.identifier.numeric);
+
+    DBG(b400);
+    sprintf(b400,
+        "VT nodeClass=%u",
+        (unsigned)vt->head.nodeClass);
+
+    DBG(b400);
+
+
+
+
+
+
+
+
+
+    sprintf(b,
+        "VT valueRank=%d  arrayDimSize=%u",
+        (int)vt->valueRank,
+        (unsigned)vt->arrayDimensionsSize);
+    DBG(b);
+
+    sprintf(b,
+        "NODE valueRank=%d  arrayDimSize=%u",
+        (int)node->valueRank,
+        (unsigned)node->arrayDimensionsSize);
+    DBG(b);
+
+    sprintf(b,
+        "VT dataType ns=%u id=%u",
+        (unsigned)vt->dataType.namespaceIndex,
+        (unsigned)vt->dataType.identifier.numeric);
+    DBG(b);
+
+    sprintf(b,
+        "NODE dataType ns=%u id=%u",
+        (unsigned)node->dataType.namespaceIndex,
+        (unsigned)node->dataType.identifier.numeric);
+    DBG(b);
+
+    /* If no value is set, see if the vt provides one and copy it. */
     UA_DataValue origDv;
     UA_DataValue_init(&origDv);
-    UA_StatusCode retval = readValueAttribute(server, session, node, &origDv);
-    if(retval != UA_STATUSCODE_GOOD)
+
+    UA_StatusCode retval =
+        readValueAttribute(server, session, node, &origDv);
+
+    if (retval != UA_STATUSCODE_GOOD)
         return retval;
 
-    if(origDv.hasValue && origDv.value.type) {
-        /* A value is present */
+    if (origDv.hasValue && origDv.value.type) {
         UA_DataValue_clear(&origDv);
-    } else {
+    }
+    else {
         UA_DataValue_clear(&origDv);
+
         UA_DataValue v;
         UA_DataValue_init(&v);
-        retval = readValueAttribute(server, session, (const UA_VariableNode*)vt, &v);
-        if(retval == UA_STATUSCODE_GOOD && v.hasValue) {
-            /* Let the write path adjust equivalent wire types before it
-             * performs the final compatibility check. */
-            retval = writeAttribute(server, &server->adminSession,
-                                    &node->head.nodeId,
-                                    UA_ATTRIBUTEID_VALUE, &v.value,
-                                    &UA_TYPES[UA_TYPES_VARIANT]);
+
+        retval =
+            readValueAttribute(server, session,
+                (const UA_VariableNode*)vt, &v);
+
+        if (retval == UA_STATUSCODE_GOOD && v.hasValue) {
+
+            DBG("Copy default VALUE from VariableType");
+
+            retval =
+                writeAttribute(server, session,
+                    &node->head.nodeId,
+                    UA_ATTRIBUTEID_VALUE,
+                    &v.value,
+                    &UA_TYPES[UA_TYPES_VARIANT]);
         }
+
         UA_DataValue_clear(&v);
 
-        if(retval != UA_STATUSCODE_GOOD) {
-            logAddNode(server->config.logging, session, &node->head.nodeId,
-                       "The default content of the VariableType could "
-                       "not be used. This may happen if the VariableNode "
-                       "makes additional restrictions.");
+        if (retval != UA_STATUSCODE_GOOD) {
+            logAddNode(server->config.logging, session,
+                &node->head.nodeId,
+                "The default content of the VariableType could not be used.");
             retval = UA_STATUSCODE_GOOD;
         }
     }
 
-    /* If no datatype is given, use the datatype of the vt */
-    if(UA_NodeId_isNull(&node->dataType)) {
-        logAddNode(server->config.logging, session, &node->head.nodeId,
-                   "No datatype given; Copy the datatype attribute "
-                   "from the TypeDefinition");
-        retval = writeAttribute(server, &server->adminSession,
-                                &node->head.nodeId,
-                                UA_ATTRIBUTEID_DATATYPE, &vt->dataType,
-                                &UA_TYPES[UA_TYPES_NODEID]);
-        if(retval != UA_STATUSCODE_GOOD)
+    if (UA_NodeId_isNull(&node->dataType)) {
+
+        DBG("Copy DATATYPE from VariableType");
+
+        retval =
+            writeAttribute(server, session,
+                &node->head.nodeId,
+                UA_ATTRIBUTEID_DATATYPE,
+                &vt->dataType,
+                &UA_TYPES[UA_TYPES_NODEID]);
+
+        if (retval != UA_STATUSCODE_GOOD)
             return retval;
     }
 
-    /* Use the ArrayDimensions of the vt */
-    if(node->arrayDimensionsSize == 0 && vt->arrayDimensionsSize > 0) {
+    if (node->arrayDimensionsSize == 0 &&
+        vt->arrayDimensionsSize > 0) {
+
+        DBG("Copy ARRAYDIMENSIONS from VariableType");
+
         UA_Variant v;
         UA_Variant_init(&v);
-        UA_Variant_setArray(&v, vt->arrayDimensions, vt->arrayDimensionsSize,
-                            &UA_TYPES[UA_TYPES_UINT32]);
-        retval = writeAttribute(server, &server->adminSession,
-                                &node->head.nodeId,
-                                UA_ATTRIBUTEID_ARRAYDIMENSIONS, &v,
-                                &UA_TYPES[UA_TYPES_VARIANT]);
+
+        UA_Variant_setArray(&v,
+            vt->arrayDimensions,
+            vt->arrayDimensionsSize,
+            &UA_TYPES[UA_TYPES_UINT32]);
+
+        retval =
+            writeAttribute(server, session,
+                &node->head.nodeId,
+                UA_ATTRIBUTEID_ARRAYDIMENSIONS,
+                &v,
+                &UA_TYPES[UA_TYPES_VARIANT]);
     }
+
+    DBG("===== useVariableTypeAttributes END =====");
 
     return retval;
 }
@@ -772,9 +824,9 @@ addInterfaceChildren(UA_Server *server, UA_Session *session,
 }
 
 static UA_StatusCode
-copyChildNode(UA_Server *server, UA_Session *session,
-              const UA_NodeId *destinationNodeId,
-              const UA_ReferenceDescription *rd) {
+copyObjectVariableChild(UA_Server *server, UA_Session *session,
+                        const UA_NodeId *destinationNodeId,
+                        const UA_ReferenceDescription *rd) {
     /* Make a copy of the node */
     UA_Node *node;
     UA_StatusCode res = UA_NODESTORE_GETCOPY(server, &rd->nodeId.nodeId, &node);
@@ -838,13 +890,6 @@ copyChildNode(UA_Server *server, UA_Session *session,
         UA_REFTYPESET(UA_REFERENCETYPEINDEX_AGGREGATES);
     UA_ReferenceTypeSet reftypes_skipped =
         UA_REFTYPESET(UA_REFERENCETYPEINDEX_HASINTERFACE);
-    if(node->head.nodeClass == UA_NODECLASS_METHOD) {
-        /* InputArguments and OutputArguments describe the copied Method's
-         * signature. Keep those HasProperty references; the immutable
-         * argument metadata can remain shared with the declaration. */
-        UA_ReferenceTypeSet_add(&reftypes_skipped,
-                                UA_REFERENCETYPEINDEX_HASPROPERTY);
-    }
     if(server->config.modellingRulesOnInstances ||
        isNodeInTree(server, destinationNodeId,
                     &nodeId_typesFolder, &reftypes_aggregates)) {
@@ -865,10 +910,6 @@ copyChildNode(UA_Server *server, UA_Session *session,
     /* Add the node references */
     res = addNode_addRefs(server, session, &newNodeId, destinationNodeId,
                           &rd->referenceTypeId, &rd->typeDefinition.nodeId);
-    if(res != UA_STATUSCODE_GOOD)
-        goto errout;
-
-    res = callEarlyConstructors(server, session, &newNodeId);
     if(res != UA_STATUSCODE_GOOD)
         goto errout;
 
@@ -949,11 +990,8 @@ copyChild(UA_Server *server, UA_Session *session,
             return UA_STATUSCODE_GOOD;
     }
 
-    /* By default a Method instance is a reference to the ObjectType
-     * declaration. Servers that need per-instance Method state can request a
-     * native copy instead. */
-    if(rd->nodeClass == UA_NODECLASS_METHOD &&
-       !server->config.copyMethodsOnInstances) {
+    /* Child is a method -> create a reference */
+    if(rd->nodeClass == UA_NODECLASS_METHOD) {
         UA_AddReferencesItem newItem;
         UA_AddReferencesItem_init(&newItem);
         newItem.sourceNodeId = *destinationNodeId;
@@ -965,15 +1003,14 @@ copyChild(UA_Server *server, UA_Session *session,
         return retval;
     }
 
-    /* Copy the child node into the instance. */
+    /* Child is a variable or object */
     if(rd->nodeClass == UA_NODECLASS_VARIABLE ||
-       rd->nodeClass == UA_NODECLASS_OBJECT ||
-       rd->nodeClass == UA_NODECLASS_METHOD) {
+       rd->nodeClass == UA_NODECLASS_OBJECT) {
         retval = beginChildInstantiation(server, session, destinationNodeId,
                                          &rd->nodeId.nodeId);
         if(retval != UA_STATUSCODE_GOOD)
             return retval;
-        retval = copyChildNode(server, session, destinationNodeId, rd);
+        retval = copyObjectVariableChild(server, session, destinationNodeId, rd);
         endChildInstantiation(server);
     }
 
@@ -1418,16 +1455,45 @@ Operation_addNode_begin(UA_Server *server, UA_Session *session, void *nodeContex
     UA_Boolean noBrowseName = UA_QualifiedName_isNull(&item->browseName);
     UA_StatusCode retval =
         checkSetBrowseName(server, session, (UA_AddNodesItem*)(uintptr_t)item);
+
+    char buf[128];
+
+    snprintf(buf, sizeof(buf),
+        "checkSetBrowseName = %08X", retval);
+    DBG(buf);
+
+
+
     if(retval != UA_STATUSCODE_GOOD)
         return retval;
 
     /* Create the node and add it to the nodestore */
     retval = addNode_raw(server, session, nodeContext, item, outNewNodeId);
+
+
+    snprintf(buf, sizeof(buf),
+        "addNode_raw = %08X", retval);
+    DBG(buf);
+
+
+
+
     if(retval != UA_STATUSCODE_GOOD)
         goto cleanup;
 
-    retval = addNode_prepare(server, session, outNewNodeId, parentNodeId,
+    /* Typecheck and add references to parent and type definition */
+    retval = addNode_addRefs(server, session, outNewNodeId, parentNodeId,
                              referenceTypeId, &item->typeDefinition.nodeId);
+
+
+snprintf(buf,sizeof(buf),
+         "addNode_addRefs = %08X", retval);
+DBG(buf);
+
+
+
+    if(retval != UA_STATUSCODE_GOOD)
+        deleteNode(server, *outNewNodeId, true);
 
     if(outNewNodeId == &newId)
         UA_NodeId_clear(&newId);
@@ -1435,20 +1501,6 @@ Operation_addNode_begin(UA_Server *server, UA_Session *session, void *nodeContex
  cleanup:
     if(noBrowseName)
         UA_QualifiedName_clear((UA_QualifiedName*)(uintptr_t)&item->browseName);
-    return retval;
-}
-
-UA_StatusCode
-addNode_prepare(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId,
-                const UA_NodeId *parentNodeId, const UA_NodeId *referenceTypeId,
-                const UA_NodeId *typeDefinitionId) {
-    UA_LOCK_ASSERT(&server->serviceMutex);
-    UA_StatusCode retval = addNode_addRefs(server, session, nodeId, parentNodeId,
-                                           referenceTypeId, typeDefinitionId);
-    if(retval == UA_STATUSCODE_GOOD)
-        retval = callEarlyConstructors(server, session, nodeId);
-    if(retval != UA_STATUSCODE_GOOD)
-        deleteNode(server, *nodeId, true);
     return retval;
 }
 
@@ -1715,6 +1767,15 @@ addNode_finish(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId) 
      * in a VariableNode. So that the sourceTimestamp is set in the Write service.) */
     if(node->head.nodeClass == UA_NODECLASS_VARIABLE) {
         retval = checkSetIsDynamicVariable(server, session, nodeId);
+
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+            "checkSetIsDynamicVariable = 0x%08X", retval);
+        DBG(buf);
+
+
+
+
         if(retval != UA_STATUSCODE_GOOD)
             goto cleanup;
     }
@@ -1744,6 +1805,14 @@ addNode_finish(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId) 
         retval = useVariableTypeAttributes(server, session,
                                            &node->variableNode,
                                            &type->variableTypeNode);
+
+
+        char buf[128];
+        snprintf(buf, sizeof(buf),
+            "useVariableTypeAttributes = 0x%08X", retval);
+        DBG(buf);
+
+
         if(retval != UA_STATUSCODE_GOOD) {
             UA_LOG_INFO_SESSION(server->config.logging, session,
                                 "AddNode (%N): Using attributes for from "
@@ -1768,6 +1837,14 @@ addNode_finish(UA_Server *server, UA_Session *session, const UA_NodeId *nodeId) 
          * again. Then, the changes are type-checked by the normal write service. */
         retval = typeCheckVariableNode(server, session, &node->variableNode,
                                        &type->variableTypeNode);
+
+
+        snprintf(buf, sizeof(buf),
+            "typeCheckVariableNode = 0x%08X", retval);
+        DBG(buf);
+
+
+
         if(retval != UA_STATUSCODE_GOOD) {
             UA_LOG_INFO_SESSION(server->config.logging, session,
                                 "AddNode (%N): Type-checking failed with error code %s",
@@ -1908,7 +1985,33 @@ addNode(UA_Server *server, const UA_NodeClass nodeClass, const UA_NodeId request
     /* Call the normal addnodes service */
     UA_AddNodesResult result;
     UA_AddNodesResult_init(&result);
+ //   DBG(">>> before Operation_addNode");
+
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+        ">>> AddNode ns=%u name=%.*s class=%u",
+        item.browseName.namespaceIndex,
+        (int)item.browseName.name.length,
+        item.browseName.name.data,
+        item.nodeClass);
+    DBG(buf);
+
     Operation_addNode(server, &server->adminSession, nodeContext, &item, &result);
+
+    snprintf(buf, sizeof(buf),
+        "<<< status=0x%08X",
+        result.statusCode);
+    DBG(buf);
+
+//    DBG("<<< after Operation_addNode");
+
+if(result.statusCode != UA_STATUSCODE_GOOD)
+    DBG("Operation_addNode returned BAD");
+else
+    DBG("Operation_addNode returned GOOD");
+
+
+
     if(outNewNodeId)
         *outNewNodeId = result.addedNodeId;
     else
@@ -1946,6 +2049,58 @@ UA_Server_addVariableNode(UA_Server *server, const UA_NodeId requestedNewNodeId,
                             &typeDefinition, (const UA_NodeAttributes*)&attr,
                             &UA_TYPES[UA_TYPES_VARIABLEATTRIBUTES],
                             nodeContext, outNewNodeId);
+}
+UA_EXPORT UA_StatusCode
+UA_Server_addVariableNode_PTR(
+    UA_Server* server,
+    const UA_NodeId* requestedNewNodeId,
+    const UA_NodeId* parentNodeId,
+    const UA_NodeId* referenceTypeId,
+    const UA_QualifiedName* browseName,
+    const UA_NodeId* typeDefinition,
+    const UA_VariableAttributes* attr,
+    void* nodeContext,
+    UA_NodeId* outNewNodeId)
+{
+    DBG("!!!!!!!!!! UA_Server_addVariableNode_PTR CALLED !!!!!!!!!!");
+
+    char b[128];
+
+    snprintf(b, sizeof(b),
+        "Attr.valueRank=%d",
+        (int)attr->valueRank);
+    DBG(b);
+
+    snprintf(b, sizeof(b),
+        "Attr.arrayDimensionsSize=%u",
+        (unsigned)attr->arrayDimensionsSize);
+    DBG(b);
+
+    snprintf(b, sizeof(b),
+        "Attr.Value.arrayLength=%u",
+        (unsigned)attr->value.arrayLength);
+    DBG(b);
+
+    snprintf(b, sizeof(b),
+        "Attr.Value.data=%p",
+        attr->value.data);
+    DBG(b);
+
+    snprintf(b, sizeof(b),
+        "Attr.Value.type=%p",
+        (void*)attr->value.type);
+    DBG(b);
+
+    return UA_Server_addVariableNode(
+        server,
+        *requestedNewNodeId,
+        *parentNodeId,
+        *referenceTypeId,
+        *browseName,
+        *typeDefinition,
+        *attr,
+        nodeContext,
+        outNewNodeId);
 }
 
 UA_StatusCode
@@ -2897,7 +3052,7 @@ setVariableNode_internalValueSource(UA_Server *server, const UA_NodeId nodeId,
     return editNode(server, &server->adminSession, &nodeId,
                     UA_NODEATTRIBUTESMASK_VALUE, UA_REFERENCETYPESET_NONE,
                     UA_BROWSEDIRECTION_INVALID,
-                    (UA_EditNodeCallback)setInternalValueSourceCB, &ctx);
+                    setInternalValueSourceCB, &ctx);
 }
 
 UA_StatusCode
@@ -3056,12 +3211,6 @@ UA_Server_addCallbackValueSourceVariableNode(UA_Server *server,
                              &referenceTypeId, &typeDefinition);
     if(retval != UA_STATUSCODE_GOOD)
         goto cleanup;
-
-    retval = callEarlyConstructors(server, &server->adminSession, outNewNodeId);
-    if(retval != UA_STATUSCODE_GOOD) {
-        deleteNode(server, *outNewNodeId, true);
-        goto cleanup;
-    }
 
     /* Call the constructors */
     retval = addNode_finish(server, &server->adminSession, outNewNodeId);

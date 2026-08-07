@@ -16,10 +16,7 @@ endif()
 find_package(Check REQUIRED)
 set(LIBS ${CHECK_LIBRARIES} ${open62541_LIBRARIES})
 if(NOT WIN32 AND NOT APPLE AND NOT (CMAKE_HOST_SYSTEM_NAME MATCHES "OpenBSD") AND NOT (CMAKE_HOST_SYSTEM_NAME MATCHES "FreeBSD"))
-    find_library(SUBUNIT_LIB subunit)
-    if(SUBUNIT_LIB)
-        list(APPEND LIBS subunit)
-    endif()
+    list(APPEND LIBS subunit)
 endif()
 include_directories(${CHECK_INCLUDE_DIRS})
 link_directories(${CHECK_LIBRARY_DIRS})
@@ -91,12 +88,9 @@ set(test_plugin_sources
 # Network replay tests currently require a Linux environment.
 # Also only do it for 64bit builds, as there is a bug in the Debian multi-arch installation.
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux" AND NOT UA_FORCE_32BIT)
-    find_path(PCAP_INCLUDE_DIR pcap.h)
-    if(PCAP_INCLUDE_DIR)
-        list(APPEND test_plugin_sources
-                    ${PROJECT_SOURCE_DIR}/tests/testing-plugins/testing_networklayers_pcap.c)
-        list(APPEND LIBS pcap)
-    endif()
+    list(APPEND test_plugin_sources
+                ${PROJECT_SOURCE_DIR}/tests/testing-plugins/testing_networklayers_pcap.c)
+    list(APPEND LIBS pcap)
 endif()
 
 if(UA_ENABLE_PUBSUB)
@@ -312,17 +306,10 @@ ua_add_test(check_eventloop.c)
 ua_add_test(check_eventloop_tcp.c)
 ua_add_test(check_eventloop_udp.c)
 
-if(UA_ENABLE_EVENTLOOP_GLIB)
-    ua_add_test(check_eventloop_tcp_glib.c)
-endif()
-
 if((${CMAKE_SYSTEM_NAME} STREQUAL "Linux" OR
      ${CMAKE_SYSTEM_NAME} STREQUAL "Darwin") AND
    NOT UA_ARCHITECTURE_LWIP)
     ua_add_test(check_eventloop_interrupt.c)
-    if(UA_ENABLE_EVENTLOOP_GLIB)
-        ua_add_test(check_eventloop_interrupt_glib.c)
-    endif()
 endif()
 
 if(${CMAKE_SYSTEM_NAME} STREQUAL "Linux" AND NOT UA_ARCHITECTURE_LWIP AND NOT UA_ENABLE_UNIT_TESTS_MEMCHECK)
@@ -343,8 +330,6 @@ if(UA_ENABLE_LWS)
     ua_add_test(check_eventloop_http.c WRAPPER ${Python3_EXECUTABLE}
                 ${PROJECT_SOURCE_DIR}/tools/lws/httpServer.py --run-test)
     ua_add_test(check_eventloop_websocket_lws.c)
-    target_include_directories(check_eventloop_websocket_lws PRIVATE
-                               ${LIBWEBSOCKETS_INCLUDE_DIR})
 endif()
 
 # Test Server
@@ -663,9 +648,7 @@ endif()
 # Cross-SDK interoperability test binaries (standalone, no check framework)
 if(UA_BUILD_INTEROP_TESTS)
     if(NOT TARGET interop_server)
-        add_executable(interop_server
-            interop/interop_server.c
-            interop/common/interop_server_common.c
+        add_executable(interop_server interop/interop_server.c
             $<TARGET_OBJECTS:open62541-object>
             $<TARGET_OBJECTS:open62541-plugins>)
         target_link_libraries(interop_server ${LIBS})
@@ -674,35 +657,11 @@ if(UA_BUILD_INTEROP_TESTS)
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests")
     endif()
     if(NOT TARGET check_interop_client)
-        add_executable(check_interop_client
-            interop/check_interop_client.c
-            interop/common/interop_client_common.c
+        add_executable(check_interop_client interop/check_interop_client.c
             $<TARGET_OBJECTS:open62541-object>
             $<TARGET_OBJECTS:open62541-plugins>)
         target_link_libraries(check_interop_client ${LIBS})
         set_target_properties(check_interop_client PROPERTIES
-            FOLDER "tests"
-            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests")
-    endif()
-    if(UA_ENABLE_LWS AND NOT TARGET interop_server_wss)
-        add_executable(interop_server_wss
-            interop/websocket/interop_server_wss.c
-            interop/common/interop_server_common.c
-            $<TARGET_OBJECTS:open62541-object>
-            $<TARGET_OBJECTS:open62541-plugins>)
-        target_link_libraries(interop_server_wss ${LIBS})
-        set_target_properties(interop_server_wss PROPERTIES
-            FOLDER "tests"
-            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests")
-    endif()
-    if(UA_ENABLE_LWS AND NOT TARGET check_interop_client_wss)
-        add_executable(check_interop_client_wss
-            interop/websocket/check_interop_client_wss.c
-            interop/common/interop_client_common.c
-            $<TARGET_OBJECTS:open62541-object>
-            $<TARGET_OBJECTS:open62541-plugins>)
-        target_link_libraries(check_interop_client_wss ${LIBS})
-        set_target_properties(check_interop_client_wss PROPERTIES
             FOLDER "tests"
             RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests")
     endif()

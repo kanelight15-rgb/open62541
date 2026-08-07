@@ -16,6 +16,10 @@ typedef struct {
     size_t messages;
 } ConnectionContext;
 
+static UA_Boolean certificateGroupCleared;
+static UA_Boolean acceptCertificate;
+static size_t certificateVerifyCalls;
+
 static UA_ByteString
 loadFile(const char *path) {
     UA_ByteString out = UA_BYTESTRING_NULL;
@@ -28,6 +32,22 @@ loadFile(const char *path) {
     if(f)
         fclose(f);
     return out;
+}
+
+static UA_StatusCode
+verifyCertificate(UA_CertificateGroup *cg, const UA_ByteString *certificate) {
+    (void)cg;
+    ++certificateVerifyCalls;
+    if(!certificate || certificate->length == 0)
+        return UA_STATUSCODE_BADCERTIFICATEINVALID;
+    return acceptCertificate ? UA_STATUSCODE_GOOD :
+        UA_STATUSCODE_BADCERTIFICATEUNTRUSTED;
+}
+
+static void
+clearCertificateGroup(UA_CertificateGroup *cg) {
+    (void)cg;
+    certificateGroupCleared = true;
 }
 
 static void
@@ -89,8 +109,7 @@ connectionClosed(void *context) {
 
 static void
 runTlsConnection(const char *portEnvironment, const char *addressString,
-                 UA_Boolean withCaCertificate,
-                 UA_Boolean withClientCertificate,
+                 UA_Boolean accept, UA_Boolean withClientCertificate,
                  UA_Boolean expectEstablished) {
     const char *portString = getenv(portEnvironment);
     ck_assert_ptr_nonnull(portString);
@@ -101,6 +120,11 @@ runTlsConnection(const char *portEnvironment, const char *addressString,
     UA_EventLoop *el = UA_EventLoop_new_POSIX(UA_Log_Stdout);
     ck_assert_ptr_nonnull(mqtt);
     ck_assert_ptr_nonnull(el);
+    UA_CertificateGroup certificateGroup = {0};
+    certificateGroup.verifyCertificate = verifyCertificate;
+    mqtt->certificateGroup = &certificateGroup;
+    acceptCertificate = accept;
+    certificateVerifyCalls = 0;
     ck_assert_uint_eq(el->registerEventSource(el, &mqtt->eventSource),
                       UA_STATUSCODE_GOOD);
     ck_assert_uint_eq(el->start(el), UA_STATUSCODE_GOOD);
@@ -111,8 +135,7 @@ runTlsConnection(const char *portEnvironment, const char *addressString,
     UA_Boolean useSSL = true;
     UA_ByteString certificate = UA_BYTESTRING_NULL;
     UA_ByteString privateKey = UA_BYTESTRING_NULL;
-    UA_ByteString caCertificate = UA_BYTESTRING_NULL;
-    UA_KeyValuePair pairs[7] = {0};
+    UA_KeyValuePair pairs[6] = {0};
     pairs[0].key = UA_QUALIFIEDNAME(0, "address");
     UA_Variant_setScalar(&pairs[0].value, &address, &UA_TYPES[UA_TYPES_STRING]);
     pairs[1].key = UA_QUALIFIEDNAME(0, "port");
@@ -122,24 +145,18 @@ runTlsConnection(const char *portEnvironment, const char *addressString,
     pairs[3].key = UA_QUALIFIEDNAME(0, "useSSL");
     UA_Variant_setScalar(&pairs[3].value, &useSSL, &UA_TYPES[UA_TYPES_BOOLEAN]);
     size_t paramsSize = 4;
-    if(withCaCertificate) {
-        caCertificate = loadFile("server_cert.der");
-        ck_assert_ptr_nonnull(caCertificate.data);
-        pairs[paramsSize].key = UA_QUALIFIEDNAME(0, "ca-certificate");
-        UA_Variant_setScalar(&pairs[paramsSize++].value, &caCertificate,
-                             &UA_TYPES[UA_TYPES_BYTESTRING]);
-    }
     if(withClientCertificate) {
         certificate = loadFile("server_cert.der");
         privateKey = loadFile("server_key.der");
         ck_assert_ptr_nonnull(certificate.data);
         ck_assert_ptr_nonnull(privateKey.data);
-        pairs[paramsSize].key = UA_QUALIFIEDNAME(0, "certificate");
-        UA_Variant_setScalar(&pairs[paramsSize++].value, &certificate,
+        pairs[4].key = UA_QUALIFIEDNAME(0, "certificate");
+        UA_Variant_setScalar(&pairs[4].value, &certificate,
                              &UA_TYPES[UA_TYPES_BYTESTRING]);
-        pairs[paramsSize].key = UA_QUALIFIEDNAME(0, "private-key");
-        UA_Variant_setScalar(&pairs[paramsSize++].value, &privateKey,
+        pairs[5].key = UA_QUALIFIEDNAME(0, "private-key");
+        UA_Variant_setScalar(&pairs[5].value, &privateKey,
                              &UA_TYPES[UA_TYPES_BYTESTRING]);
+        paramsSize = 6;
     }
     UA_KeyValueMap params = {paramsSize, pairs};
     ConnectionContext connection = {0};
@@ -148,12 +165,13 @@ runTlsConnection(const char *portEnvironment, const char *addressString,
                       UA_STATUSCODE_GOOD);
     UA_ByteString_clear(&certificate);
     UA_ByteString_clear(&privateKey);
-    UA_ByteString_clear(&caCertificate);
     if(expectEstablished)
         runUntil(el, connectionEstablished, &connection);
     else
         runUntil(el, connectionClosed, &connection);
 
+    if(expectEstablished || !accept)
+        ck_assert_uint_gt(certificateVerifyCalls, 0);
     ck_assert_uint_eq(connection.established, expectEstablished);
     el->stop(el);
     runUntil(el, eventLoopStopped, el);
@@ -161,6 +179,7 @@ runTlsConnection(const char *portEnvironment, const char *addressString,
 }
 
 START_TEST(connectSubscribePublish) {
+    certificateGroupCleared = false;
     const char *portString = getenv("OPEN62541_TEST_MQTT_PORT");
     ck_assert_ptr_nonnull(portString);
     UA_UInt16 port = (UA_UInt16)strtoul(portString, NULL, 10);
@@ -168,6 +187,11 @@ START_TEST(connectSubscribePublish) {
     UA_ConnectionManager *mqtt =
         UA_ConnectionManager_new_LWS_MQTT(UA_STRING("mqttLwsCM"));
     ck_assert_ptr_nonnull(mqtt);
+    mqtt->certificateGroup =
+        (UA_CertificateGroup*)UA_calloc(1, sizeof(UA_CertificateGroup));
+    ck_assert_ptr_nonnull(mqtt->certificateGroup);
+    mqtt->certificateGroup->clear = clearCertificateGroup;
+    mqtt->certificateGroupOwned = true;
     UA_EventLoop *el = UA_EventLoop_new_POSIX(UA_Log_Stdout);
     ck_assert_ptr_nonnull(el);
     ck_assert_uint_eq(el->registerEventSource(el, &mqtt->eventSource),
@@ -215,6 +239,7 @@ START_TEST(connectSubscribePublish) {
     el->stop(el);
     runUntil(el, eventLoopStopped, el);
     el->free(el);
+    ck_assert(certificateGroupCleared);
 }
 END_TEST
 

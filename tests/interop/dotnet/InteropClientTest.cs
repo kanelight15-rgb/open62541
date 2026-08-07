@@ -28,12 +28,10 @@ namespace Opc.Ua.Interop.Tests
                 .SetMinimumLevel(LogLevel.Debug))) { }
     }
 
-    public abstract class InteropClientTestBase
+    [TestFixture]
+    [Category("Interop")]
+    public class InteropClientTest
     {
-        protected abstract string ServerUrlEnvironmentVariable { get; }
-        protected abstract string DefaultServerUrl { get; }
-        protected virtual bool RequireServerUrl => false;
-
         private string _serverUrl = null!;
         private ApplicationConfiguration _config = null!;
         private DefaultSessionFactory _sessionFactory = null!;
@@ -47,16 +45,8 @@ namespace Opc.Ua.Interop.Tests
         [OneTimeSetUp]
         public async Task OneTimeSetUp()
         {
-            _serverUrl = Environment.GetEnvironmentVariable(
-                ServerUrlEnvironmentVariable) ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(_serverUrl))
-            {
-                if (RequireServerUrl)
-                {
-                    Assert.Ignore($"Set {ServerUrlEnvironmentVariable} to run this fixture.");
-                }
-                _serverUrl = DefaultServerUrl;
-            }
+            _serverUrl = Environment.GetEnvironmentVariable("OPCUA_INTEROP_SERVER_URL")
+                ?? "opc.tcp://localhost:4840";
 
             _telemetry = new InteropTelemetryContext();
 
@@ -729,14 +719,5 @@ namespace Opc.Ua.Interop.Tests
                 (string?)null,
                 X509KeyStorageFlags.Exportable);
         }
-    }
-
-    [TestFixture]
-    [Category("Interop")]
-    public sealed class InteropClientTest : InteropClientTestBase
-    {
-        protected override string ServerUrlEnvironmentVariable =>
-            "OPCUA_INTEROP_SERVER_URL";
-        protected override string DefaultServerUrl => "opc.tcp://localhost:4840";
     }
 }

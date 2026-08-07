@@ -14,7 +14,7 @@
  *    Copyright 2017 (c) Stefan Profanter, fortiss GmbH
  *    Copyright 2016 (c) Lorenz Haas
  */
-
+#include <windows.h>
 #include <open62541/types.h>
 #include <open62541/types_generated.h>
 
@@ -363,8 +363,15 @@ UA_String_vformat(UA_String *str, const char *format, va_list args) {
 }
 
 /* QualifiedName */
+
 UA_Boolean
-UA_QualifiedName_isNull(const UA_QualifiedName *q) {
+UA_QualifiedName_isNull(const UA_QualifiedName* q) {
+
+    if (q->namespaceIndex == 0 && q->name.length == 0)
+        OutputDebugStringA("UA_QualifiedName_isNull -> TRUE");
+    else
+        OutputDebugStringA("UA_QualifiedName_isNull -> FALSE");
+
     return (q->namespaceIndex == 0 && q->name.length == 0);
 }
 
@@ -1416,6 +1423,9 @@ Variant_copy(const void *src, void *dst, const UA_DataType *_) {
     return UA_STATUSCODE_GOOD;
 }
 
+
+
+
 void
 UA_Variant_setScalar(UA_Variant *v, void * UA_RESTRICT p,
                      const UA_DataType *type) {
@@ -1423,6 +1433,36 @@ UA_Variant_setScalar(UA_Variant *v, void * UA_RESTRICT p,
     v->type = type;
     v->arrayLength = 0;
     v->data = p;
+}
+UA_EXPORT void
+UA_Variant_setInt32_PTR(
+    UA_Variant* v,
+    UA_Int32* value)
+{
+    UA_Variant_setScalar(v, value, &UA_TYPES[UA_TYPES_INT32]);
+}
+UA_EXPORT const UA_NodeId*
+UA_DataType_getTypeId_PTR(const UA_DataType* type)
+{
+    if (!type)
+        return NULL;
+
+    return &type->typeId;
+}
+UA_EXPORT const UA_VariableAttributes*
+UA_VariableAttributes_default_PTR(void)
+{
+    return &UA_VariableAttributes_default;
+}
+
+
+UA_EXPORT void
+UA_Variant_setScalar_PTR(
+    UA_Variant* v,
+    const void* value,
+    const UA_DataType* type)
+{
+    UA_Variant_setScalar(v, (void*)value, type);
 }
 
 UA_StatusCode

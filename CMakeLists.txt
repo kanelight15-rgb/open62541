@@ -172,23 +172,13 @@ mark_as_advanced(UA_ENABLE_LWS)
 option(UA_ENABLE_LWS_MQTT "Enable the libwebsockets MQTT ConnectionManager" OFF)
 mark_as_advanced(UA_ENABLE_LWS_MQTT)
 
-
 if(UA_ENABLE_LWS_MQTT AND NOT UA_ENABLE_LWS)
     message(FATAL_ERROR "UA_ENABLE_LWS_MQTT requires UA_ENABLE_LWS")
 endif()
 
 if(UA_ENABLE_LWS)
     if(NOT UA_ARCHITECTURE_POSIX)
-        message(FATAL_ERROR "libwebsockets cannot be used without POSIX")
-    endif()
-endif()
-
-option(UA_ENABLE_EVENTLOOP_GLIB "Enable the GLib-based EventLoop implementation (requires glib-2.0)" OFF)
-mark_as_advanced(UA_ENABLE_EVENTLOOP_GLIB)
-
-if(UA_ENABLE_EVENTLOOP_GLIB)
-    if(NOT UA_ARCHITECTURE_POSIX)
-        message(FATAL_ERROR "The GLib EventLoop cannot be used without posix")
+        message(FATAL_ERROR "Libwebsockets cannot be used without posix")
     endif()
 endif()
 
@@ -591,14 +581,6 @@ if(UA_ENABLE_LWS)
     endif()
 endif()
 
-if(UA_ENABLE_EVENTLOOP_GLIB)
-    find_package(PkgConfig REQUIRED)
-    pkg_search_module(GLIB2 REQUIRED glib-2.0)
-    include_directories(${GLIB2_INCLUDE_DIRS})
-    list(APPEND open62541_LIBRARIES ${GLIB2_LIBRARIES})
-    list(APPEND pkgcfg_requiresprivate "glib-2.0")
-endif()
-
 if(MINGW)
     # GCC stack protector support
     list(APPEND open62541_LIBRARIES ws2_32 ssp)
@@ -939,8 +921,7 @@ set(lib_sources ${PROJECT_SOURCE_DIR}/src/ua_types.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_ns0_diagnostics.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_config.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_binary.c
-                ${PROJECT_SOURCE_DIR}/src/server/ua_server_binary_tcp.c
-                ${PROJECT_SOURCE_DIR}/src/server/ua_server_binary_tcp_reverse.c
+                ${PROJECT_SOURCE_DIR}/src/server/ua_server_binary_reverse.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_utils.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_auditing.c
                 ${PROJECT_SOURCE_DIR}/src/server/ua_server_async.c
@@ -974,8 +955,6 @@ if(UA_ENABLE_RBAC)
     list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/server/ua_server_ns0_rbac.c)
     list(APPEND internal_headers ${PROJECT_SOURCE_DIR}/src/server/ua_server_rbac.h)
 endif()
-
-list(APPEND lib_sources ${PROJECT_SOURCE_DIR}/src/server/ua_server_ws.c)
 
 # Dependencies
 set(lib_sources ${lib_sources}
@@ -1277,12 +1256,6 @@ elseif(UA_ARCHITECTURE_POSIX OR UA_ARCHITECTURE_WIN32 OR UA_ENABLE_AMALGAMATION)
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_udp.c
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_eth.c
          ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_posix_interrupt.c)
-    if(UA_ENABLE_EVENTLOOP_GLIB)
-        list(APPEND plugin_sources
-             ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_glib.h
-             ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_glib.c
-             ${PROJECT_SOURCE_DIR}/arch/posix/eventloop_glib_interrupt.c)
-    endif()
 endif()
 
 if(UA_ARCHITECTURE_FREERTOS)
@@ -1758,41 +1731,20 @@ if(UA_BUILD_UNIT_TESTS)
 endif()
 
 # Build the interop targets standalone (no Check framework, no full examples)
-# when only interop tests are needed.
+# when only interop tests are needed.  interop_server and check_interop_client
+# are the only two binaries required by tools/ci/cross-sdk/interop_test.sh.
 if(UA_BUILD_INTEROP_TESTS AND NOT UA_BUILD_UNIT_TESTS)
-    add_executable(interop_server
-        tests/interop/interop_server.c
-        tests/interop/common/interop_server_common.c)
+    add_executable(interop_server tests/interop/interop_server.c)
     target_link_libraries(interop_server open62541::open62541)
     set_target_properties(interop_server PROPERTIES
         FOLDER "tests"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests")
 
-    add_executable(check_interop_client
-        tests/interop/check_interop_client.c
-        tests/interop/common/interop_client_common.c)
+    add_executable(check_interop_client tests/interop/check_interop_client.c)
     target_link_libraries(check_interop_client open62541::open62541)
     set_target_properties(check_interop_client PROPERTIES
         FOLDER "tests"
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests")
-
-    if(UA_ENABLE_LWS)
-        add_executable(interop_server_wss
-            tests/interop/websocket/interop_server_wss.c
-            tests/interop/common/interop_server_common.c)
-        target_link_libraries(interop_server_wss open62541::open62541)
-        set_target_properties(interop_server_wss PROPERTIES
-            FOLDER "tests"
-            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests")
-
-        add_executable(check_interop_client_wss
-            tests/interop/websocket/check_interop_client_wss.c
-            tests/interop/common/interop_client_common.c)
-        target_link_libraries(check_interop_client_wss open62541::open62541)
-        set_target_properties(check_interop_client_wss PROPERTIES
-            FOLDER "tests"
-            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/tests")
-    endif()
 endif()
 
 if(UA_BUILD_FUZZING OR UA_BUILD_OSS_FUZZ OR UA_BUILD_FUZZING_CORPUS)
