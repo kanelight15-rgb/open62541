@@ -981,6 +981,18 @@ UA_Server_addVariableNode_PTR(
     void* nodeContext,
     UA_NodeId* outNewNodeId);
 
+UA_EXPORT UA_StatusCode
+UA_Server_addObjectNode_PTR(
+    UA_Server* server,
+    const UA_NodeId* requestedNewNodeId,
+    const UA_NodeId* parentNodeId,
+    const UA_NodeId* referenceTypeId,
+    const UA_QualifiedName* browseName,
+    const UA_NodeId* typeDefinition,
+    const UA_ObjectAttributes* attr,
+    void* nodeContext,
+    UA_NodeId* outNewNodeId);
+
 /* Add a VariableNode with a callback value-source */
 UA_StatusCode UA_EXPORT UA_THREADSAFE
 UA_Server_addCallbackValueSourceVariableNode(UA_Server *server,

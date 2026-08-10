@@ -2103,6 +2103,33 @@ UA_Server_addVariableNode_PTR(
         outNewNodeId);
 }
 
+
+UA_EXPORT UA_StatusCode
+UA_Server_addObjectNode_PTR(
+    UA_Server* server,
+    const UA_NodeId* requestedNewNodeId,
+    const UA_NodeId* parentNodeId,
+    const UA_NodeId* referenceTypeId,
+    const UA_QualifiedName* browseName,
+    const UA_NodeId* typeDefinition,
+    const UA_ObjectAttributes* attr,
+    void* nodeContext,
+    UA_NodeId* outNewNodeId)
+{
+    DBG("!!!!!!!!!! UA_Server_addObjectNode_PTR CALLED !!!!!!!!!!");
+
+    return UA_Server_addObjectNode(
+        server,
+        *requestedNewNodeId,
+        *parentNodeId,
+        *referenceTypeId,
+        *browseName,
+        *typeDefinition,
+        *attr,
+        nodeContext,
+        outNewNodeId);
+}
+
 UA_StatusCode
 UA_Server_addVariableTypeNode(UA_Server *server, const UA_NodeId requestedNewNodeId,
                               const UA_NodeId parentNodeId, const UA_NodeId referenceTypeId,
