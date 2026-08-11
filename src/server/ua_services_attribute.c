@@ -37,6 +37,7 @@
 
 static void DBG2(const char* msg)
 {
+    /*
     if (msg == NULL)
         return;
 
@@ -49,6 +50,7 @@ static void DBG2(const char* msg)
     fputc('\n', f);
 
     fclose(f);
+    */
 }
 
 static const UA_NodeAttributesMask attr2mask[28] = {

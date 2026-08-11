@@ -28,11 +28,13 @@
 #endif
 
 static void DBG(const char* msg) {
+    /*
     FILE* f = fopen("---opc_diag.log", "a");
     if (!f)
         return;
     fprintf(f, "%s\n", msg);
     fclose(f);
+    */
 }
 
 
@@ -2129,6 +2131,22 @@ UA_Server_addObjectNode_PTR(
         nodeContext,
         outNewNodeId);
 }
+
+UA_EXPORT UA_StatusCode
+UA_ServerConfig_setApplicationName_PTR(
+    UA_ServerConfig* config,
+    const char* name)
+{
+    if (!config || !name)
+        return UA_STATUSCODE_BADINVALIDARGUMENT;
+
+    config->applicationDescription.applicationName =
+        UA_LOCALIZEDTEXT_ALLOC("en-US", name);
+
+    return UA_STATUSCODE_GOOD;
+}
+
+
 
 UA_StatusCode
 UA_Server_addVariableTypeNode(UA_Server *server, const UA_NodeId requestedNewNodeId,

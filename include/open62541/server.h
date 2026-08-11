@@ -992,6 +992,10 @@ UA_Server_addObjectNode_PTR(
     const UA_ObjectAttributes* attr,
     void* nodeContext,
     UA_NodeId* outNewNodeId);
+UA_EXPORT UA_StatusCode
+UA_ServerConfig_setApplicationName_PTR(
+    UA_ServerConfig* config,
+    const char* name);
 
 /* Add a VariableNode with a callback value-source */
 UA_StatusCode UA_EXPORT UA_THREADSAFE
