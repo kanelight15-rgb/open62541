@@ -544,6 +544,10 @@ UA_EXPORT UA_StatusCode
 UA_ServerConfig_setBasics_withPort(UA_ServerConfig* conf, UA_UInt16 portNumber) {
     return setDefaultConfig(conf, portNumber);
 }
+UA_EXPORT void
+UA_ServerConfig_allowNonePolicyPassword_PTR(UA_ServerConfig* config) {
+    config->allowNonePolicyPassword = true;
+}
 
 UA_EXPORT UA_StatusCode
 UA_ServerConfig_addSecurityPolicyNone(UA_ServerConfig *config,

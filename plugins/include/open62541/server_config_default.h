@@ -154,6 +154,10 @@ UA_ServerConfig_setBasics_withPort(UA_ServerConfig *conf,
  * @param config The configuration to manipulate
  * @param certificate The optional server certificate.
  */
+
+UA_EXPORT void
+UA_ServerConfig_allowNonePolicyPassword_PTR(UA_ServerConfig* config);
+
 UA_EXPORT UA_StatusCode
 UA_ServerConfig_addSecurityPolicyNone(UA_ServerConfig *config,
                                       const UA_ByteString *certificate);
